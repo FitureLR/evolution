@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "target": "ES5",
+    "module": "commonjs",
+    "outDir": "./dist",
+    "lib": ["ES2015", "DOM", "ScriptHost"],
+    "noImplicitAny": true,
+    "removeComments": true,
+    "preserveConstEnums": true,
+    "strict": true,
+    "strictNullChecks": true,
+    "sourceMap": true
+  },
+  "exclude": ["node_modules", "**/*.spec.ts"]
+}
