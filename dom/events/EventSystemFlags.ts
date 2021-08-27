@@ -1,5 +1,9 @@
 //
+
 type EventSystemFlags = number;
+// From PluginModuleType
+type AnyNativeEvent = Event | KeyboardEvent | MouseEvent | TouchEvent;
+type PluginName = string;
 
 declare const IS_EVENT_HANDLE_NON_MANAGED_NODE = 1;
 declare const IS_NON_DELEGATED = 2; // 1 << 1

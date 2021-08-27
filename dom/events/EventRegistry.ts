@@ -1,6 +1,6 @@
 //
 
 // specialEvent
-export const selectionchange: EventName = "selectionchange";
+export const selectionchange: DOMEventName = "selectionchange";
 
-export const allNativeEvents: Set<EventName> = new Set();
+export const allNativeEvents: Set<DOMEventName> = new Set();
