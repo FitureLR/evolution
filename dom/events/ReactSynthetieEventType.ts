@@ -15,8 +15,8 @@ type BaseSyntheticEvent = {
   _dispatchListeners?: null | Array<Function> | Function;
   _targetInst: Fiber;
   nativeEvent: Event;
-  target?: mixed;
-  relatedTarget?: mixed;
+  target?: Mixed;
+  relatedTarget?: Mixed;
   type: string;
   currentTarget: null | EventTarget;
 };

@@ -1,8 +1,22 @@
 //
+import {
+  NoLane,
+  SyncLane,
+  InputContinuousLane,
+  DefaultLane,
+  IdleLane,
+} from "./ReactFiberLane";
 
-type EventPriority = Lane;
+const DiscreteEventPriority = SyncLane; // EventPriority
+const ContinuousEventPriority = InputContinuousLane;
+const DefaultEventPriority = DefaultLane;
+const IdleEventPriority = IdleLane;
 
-declare const DiscreteEventPriority = SyncLane; // EventPriority
-declare const ContinuousEventPriority = InputContinuousLane;
-declare const DefaultEventPriority = DefaultLane;
-declare const IdleEventPriority = IdleLane;
+let currentUpdatePriority: EventPriority = NoLane;
+export function getCurrentUpdatePriority(): EventPriority {
+  return currentUpdatePriority;
+}
+
+export function setCurrentUpdatePriority(newPriority: EventPriority) {
+  currentUpdatePriority = newPriority;
+}
