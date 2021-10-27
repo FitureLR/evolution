@@ -1,7 +1,6 @@
 //
-// type RendererTask = boolean => RendererTask | null;
 
-const ReactCurrentActQueue = {
+const ReactCurrentActQueue: ReactCurrentActQueue = {
   current: null, // Array<RendererTask>
   // Our internal tests use a custom implementation of `act` that works by
   // mocking the Scheduler package. Use this field to disable the `act` warning.

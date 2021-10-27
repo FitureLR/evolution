@@ -34,6 +34,11 @@ class FiberRootNode {
   public pingedLanes: Lanes;
   public eventTimes: Array<EventTime>;
   public expirationTimes: Array<EventTime>;
+  public expiredLanes: Lanes;
+  public callbackNode: any; // function | null
+  public callbackPriority: Lanes;
+  public entangledLanes: Lanes;
+  public entangledments: Array<Lane>;
   constructor(containerInfo: HTMLElement, tag: RootTag, hydrate: boolean) {
     this.current = null;
     this.context = null;
@@ -47,6 +52,11 @@ class FiberRootNode {
     this.pingedLanes = NoLanes;
     this.eventTimes = [];
     this.expirationTimes = [];
+    this.expiredLanes = NoLanes;
+    this.callbackNode = null;
+    this.callbackPriority = NoLanes; // tmp?
+    this.entangledLanes = NoLanes;
+    this.entangledments = [];
   }
 
   //  constructor(containerInfo: HTMLElement, tag: RootTag, hydrate: boolean) : FiberRoot {

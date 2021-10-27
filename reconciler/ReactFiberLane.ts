@@ -1,4 +1,6 @@
 //
+import { ConcurrentUpdatesByDefaultMode, NoMode } from "./ReactTypeOfMode";
+import { allowConcurrentByDefault } from "../shared/ReactFeatureFlags";
 
 /* Lanes */
 
@@ -106,6 +108,15 @@ export function pickArbitraryLaneIndex(lanes: Lanes): number {
   return 31 - Math.clz32(lanes);
 }
 
+function getHighestPriorityLanes(lanes: Lanes): Lanes {
+  switch (getHighestPriorityLane(lanes)) {
+    case SyncLane:
+      return SyncLane;
+    default:
+      return lanes;
+  }
+}
+
 export function laneToIndex(lanes: Lanes) {
   return pickArbitraryLaneIndex(lanes);
 }
@@ -124,4 +135,120 @@ export function markRootSuspended(root: FiberRoot, suspendedLanes: Lanes) {
 
     lanes &= ~lane;
   }
+}
+
+export function markStarvedLanesAsExpired(root: FiberRoot, curTime: EventTime) {
+  // TODO: This gets called every time we yield. We can optimize by storing the earliest expiration time on the root.
+  // Then use that to quickly bail out of this function.
+  const { pendingLanes, suspendedLanes, pingedLanes, expirationTimes } = root;
+  let lanes = pendingLanes;
+  while (lanes) {
+    const index = pickArbitraryLaneIndex(lanes);
+    const lane = 1 << index;
+    const expirdTime = expirationTimes[index];
+    if (expirdTime === NoTimestamp) {
+      // Found a pending lane with no expiration time. If it's not suspended,
+      // or if it's pinged, assume it's CPU-bound. Compute a new expiration time using the current time.
+      if (
+        (lane & suspendedLanes) === NoLanes ||
+        (lane & pingedLanes) !== NoLanes
+      ) {
+        expirationTimes[index] = computeExpirationTime(lane, curTime);
+      }
+    } else if (expirdTime <= curTime) {
+      root.expiredLanes |= lane;
+    }
+    lanes &= ~lane;
+  }
+}
+
+function computeExpirationTime(lane: Lane, currentTime: EventTime): EventTime {
+  switch (lane) {
+    case SyncLane:
+    case InputContinuousHydrationLane:
+    case InputContinuousLane:
+      return currentTime + 250;
+    case DefaultHydrationLane:
+    case InputContinuousLane:
+      return currentTime + 5000;
+    default:
+      return NoTimestamp;
+  }
+}
+
+export function getNextLanes(root: FiberRoot, wipLanes: Lanes): Lanes {
+  const { pendingLanes, suspendedLanes, pingedLanes } = root;
+  if (pendingLanes === NoLanes) return NoLanes;
+
+  // Do not work on any idle work until all the non-idle work has finished, even if the work is suspended.
+  const nonIdlePendingLanes = pendingLanes & NonIdleLanes;
+  let nextWorkLanes = NoLanes;
+  if (nonIdlePendingLanes !== NoLanes) {
+    const nonIdleUnblockLanes = nonIdlePendingLanes & ~suspendedLanes;
+    if (nonIdleUnblockLanes !== NoLanes) {
+      nextWorkLanes = nonIdleUnblockLanes;
+    } else {
+      const nonIdlepingedLanes = nonIdlePendingLanes & pingedLanes;
+      if (nonIdlepingedLanes !== NoLanes) {
+        nextWorkLanes = nonIdleUnblockLanes;
+      }
+    }
+  } else {
+    const unblockLanes = pingedLanes & ~suspendedLanes;
+    if (unblockLanes !== NoLanes) {
+      nextWorkLanes = unblockLanes;
+    } else {
+      if (pingedLanes !== NoLanes) {
+        nextWorkLanes = pingedLanes;
+      }
+    }
+  }
+  let nextLanes = getHighestPriorityLanes(nextWorkLanes);
+  if (nextLanes === NoLanes) return NoLanes;
+  // If we're already in the middle of a render, switching lanes will interrupt it and we'll lose our progress.
+  // We should only do this if the new lanes are higher priority.
+  if (
+    wipLanes !== NoLanes &&
+    wipLanes !== nextLanes &&
+    // If we already suspended with a delay, then interrupting is fine. Don't bother waiting until the root is complete.
+    (wipLanes & suspendedLanes) === NoLanes
+  ) {
+    if (
+      nextLanes >= wipLanes ||
+      // Default priority updates should not interrupt transition updates.
+      // The only difference between default updates and transition updates is that default updates do not support refresh transitions.
+      (nextLanes === DefaultLane && (wipLanes & TransitionLanes) !== NoLanes)
+    ) {
+      // Keep working on the existing in-progress tree. Do not interrupt.
+      return wipLanes;
+    }
+  }
+  const RootFiberMode = root.current?.mode || NoMode; // ts-ignore
+  if (
+    allowConcurrentByDefault &&
+    (RootFiberMode & ConcurrentUpdatesByDefaultMode) !== NoMode
+  ) {
+    // nothing
+  } else if ((nextLanes & InputContinuousLane) !== NoLane) {
+    // When updates are sync by default, we entangle continuous priority updates and default updates, so they render in the same batch.
+    // The only reason they use separate lanes is because continuous updates should interrupt transitions, but default updates should not.
+    // 默认的同步更新中，continuous 和 default 在同一个batch中更新(entangle)，使用不同的lane仅仅是continuous可以中断transitions
+    nextLanes |= pendingLanes & DefaultLane;
+  }
+  // Check for entangled lanes and add them to the batch.
+  const { entangledLanes, entangledments } = root; // entangledLanes何时被更新
+  // A lane is said to be entangled with another
+  // when it's not allowed to render in a batch that does not also include the other lane.
+  // 当它不允许在一个不包含它的batch中去render
+  // Typically we do this when multiple updates have the same source, and we only want to respond to
+  // the most recent event from that source.
+  // 通常，当多个更新具有相同的源时，我们会这样做，并且我们只希望响应来自该源的最新事件。
+  let nextEntangleLanes = nextLanes & entangledLanes;
+  while (entangledLanes !== NoLanes) {
+    const index = 1 << pickArbitraryLaneIndex(entangledLanes);
+    const lane: Lane = entangledments[index];
+    nextLanes |= lane;
+    nextEntangleLanes &= ~lane;
+  }
+  return nextLanes;
 }

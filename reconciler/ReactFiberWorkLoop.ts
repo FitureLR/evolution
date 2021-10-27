@@ -17,11 +17,36 @@ import {
   removeLanes,
   laneToIndex,
   markRootSuspended as markRootSuspended_dontCallThisOneDirectly,
+  markStarvedLanesAsExpired,
+  getNextLanes,
+  getHighestPriorityLane,
 } from "./ReactFiberLane";
 import { requestCurrentTransition, NoTransition } from "./ReactFiberTransition";
-import { getCurrentUpdatePriority } from "./ReactEventPriorities";
-import { getCurrentEventPriority } from "./ReactFiberHostConfig";
+import {
+  getCurrentUpdatePriority,
+  lanesToEventPriority,
+} from "./ReactEventPriorities";
+import {
+  getCurrentEventPriority,
+  supportsMicrotasks,
+  scheduleMicrotask,
+} from "./ReactFiberHostConfig";
 import { HostRoot } from "./ReactWorkTags";
+import {
+  scheduleLegacySyncCallback,
+  scheduleSyncCallback,
+  flushSyncCallbacks,
+} from "./ReactFiberSyncTaskQueue";
+import {
+  scheduleCallback,
+  ImmediatePriority,
+  NormalPriority,
+  LowSchedulerPriority,
+} from "./Scheduler";
+import {
+  DiscreteEventPriority,
+  DefaultEventPriority,
+} from "./ReactEventPriorities";
 
 import { ReactCurrentActQueue } from "../react/ReactSharedInternals";
 import {
@@ -29,6 +54,7 @@ import {
   enableUpdaterTracking,
 } from "../shared/ReactFeatureFlags";
 import { isDevToolsPresent } from "./ReactFiberDevToolsHook";
+import { LegacyRoot } from "./ReactRootTags";
 
 // some ExecutionContext
 export const NoContext: ExecutionContext = 0b0000;
@@ -54,19 +80,19 @@ let executionContext: ExecutionContext = NoContext;
 let currentEventTime: number = NoTimestamp;
 let currentEventTransitionLane: Lanes = NoLanes;
 // The lanes we're rendering 我们正在更新的lanes
-let workInProgressRootRenderLanes = NoLanes;
+let WIPRootRenderLanes = NoLanes; // workInProgressRootRenderLanes
 
-let workInProgressRoot: FiberRoot | null = null;
+let WIPRoot: FiberRoot | null = null; // workInProgressRoot
 // The fiber we're working on
 let workInProgress: Fiber | null = null;
 
 // Stack that allows components to change the render lanes for its subtree
 // This is a superset of the lanes we started working on at the root. The only
-// case where it's different from `workInProgressRootRenderLanes` is when we
+// case where it's different from `WIPRootRenderLanes` is when we
 // enter a subtree that is hidden and needs to be unhidden: Suspense and
 // Offscreen component.
 //
-// Most things in the work loop should deal with workInProgressRootRenderLanes. work循环中大多数处理
+// Most things in the work loop should deal with WIPRootRenderLanes. work循环中大多数处理
 // Most things in begin/complete phases should deal with subtreeRenderLanes.
 export let subtreeRenderLanes: Lanes = NoLanes;
 // const subtreeRenderLanesCursor: StackCursor<Lanes> = createCursor(NoLanes);
@@ -121,12 +147,12 @@ export function requestUpdateLane(current: Fiber): Lane {
   if (
     !deferRenderPhaseUpdateToNextBatch &&
     (executionContext & RenderContext) !== NoContext &&
-    workInProgressRootRenderLanes !== NoLanes
+    WIPRootRenderLanes !== NoLanes
   ) {
     // 旧的行为是为其提供与当前渲染的内容相同的“线程”lane。因此，如果对稍后在同一渲染中发生的组件调用“setState”，它将刷新。
     // 理想情况下，我们希望删除特殊情况，并将其视为来自交错事件。无论如何，官方并不支持这种模式。
     // 这种行为只是一种倒退。该标志仅在我们可以推出setState警告之前存在，因为现有代码可能会意外地依赖于当前行为。
-    return pickArbitraryLane(workInProgressRootRenderLanes); // 因此返回当前lanes最低位，它将一同更新
+    return pickArbitraryLane(WIPRootRenderLanes); // 因此返回当前lanes最低位，它将一同更新
   }
   const isTransition = requestCurrentTransition() !== NoTransition;
   if (isTransition) {
@@ -161,7 +187,7 @@ export function requestUpdateLane(current: Fiber): Lane {
 
 export function isInterleavedUpdate(fiber: Fiber, lane: Lane): boolean {
   return (
-    workInProgressRoot !== null &&
+    WIPRoot !== null &&
     fiber.mode === ConcurrentMode &&
     (deferRenderPhaseUpdateToNextBatch ||
       (executionContext & RenderContext) === NoContext)
@@ -185,7 +211,7 @@ export function scheduleUpdateOnFiber(
   // Mark that the root has a pending update.
   markRootUpdated(root, lane, taskTime);
   // if (enableProfilerTimer && enableProfilerNestedUpdateScheduledHook) {}
-  if (workInProgressRoot) {
+  if (WIPRoot) {
     // deferRenderPhaseUpdateToNextBatch || (executionContext & RenderContext) === NoContext
     if (isInterleavedUpdate(fiber, lane)) {
       WIPRootUpdateLanes = mergeLanes(WIPRootUpdateLanes, lane);
@@ -198,10 +224,10 @@ export function scheduleUpdateOnFiber(
       // 当前(上一次的)的更新被暂停，因此它未完成，在新的更新(这里接受到的)到来将它设置为Suspended，这具有中断当前更新，切换到新的更新的效果
       // TODO: Make sure this doesn't override pings that happen while we've
       // already started rendering. 确保这不会覆盖我们已经开始渲染时发生的 ping。
-      markRootSuspended(root, workInProgressRootRenderLanes);
+      markRootSuspended(root, WIPRootRenderLanes);
     }
   }
-  // ensureRootIsScheduled(root, taskTime);
+  ensureRootIsScheduled(root, taskTime);
   if (
     lane === SyncLane &&
     executionContext === NoContext &&
@@ -286,4 +312,89 @@ function markRootSuspended(root: FiberRoot, suspendedLanes: Lanes) {
   suspendedLanes = removeLanes(suspendedLanes, WIPRootPingedLanes);
   suspendedLanes = removeLanes(suspendedLanes, WIPRootUpdateLanes);
   markRootSuspended_dontCallThisOneDirectly(root, suspendedLanes);
+}
+
+// _TODO
+function fakeActCallbackNode() {}
+
+function ensureRootIsScheduled(root: FiberRoot, taskTime: EventTime) {
+  const existingCallbackNode = root.callbackNode;
+  markStarvedLanesAsExpired(root, taskTime);
+  // Determine the next lanes to work on, and their priority.
+  const nextLanes = getNextLanes(
+    root,
+    root === WIPRoot ? WIPRootRenderLanes : NoLanes
+  );
+  if (nextLanes === NoLanes) {
+    // Special case: There's nothing to work on.
+    if (existingCallbackNode !== null) {
+      // cancelCallback(existingCallbackNode);
+    }
+    root.callbackNode = null;
+    root.callbackPriority = NoLane;
+  }
+  // We use the highest priority lane to represent the priority of the callback.
+  const newCallbackPriority = getHighestPriorityLane(nextLanes);
+  // Check if there's an existing task. We may be able to reuse it.
+  const existingCallbackPriority = root.callbackPriority;
+  if (
+    newCallbackPriority === existingCallbackPriority &&
+    !(
+      ReactCurrentActQueue.current !== null &&
+      existingCallbackNode !== fakeActCallbackNode
+    )
+  ) {
+    // The priority hasn't changed. We can reuse the existing task. Exit.
+    return;
+  }
+  if (existingCallbackNode != null) {
+    // Cancel the existing callback. We'll schedule a new one below.
+    // cancelCallback(existingCallbackNode);
+  }
+  // Schedule a new callback.
+  let newCallbackNode = null;
+  if (newCallbackPriority === SyncLane) {
+    if (root.tag === LegacyRoot) {
+      if (ReactCurrentActQueue.isBatchingLegacy !== null) {
+        ReactCurrentActQueue.didScheduleLegacyUpdate = true;
+      }
+      scheduleLegacySyncCallback(performSyncWorkOnRoot.bind(null, root));
+    } else {
+      scheduleSyncCallback(performSyncWorkOnRoot.bind(null, root));
+    }
+    if (supportsMicrotasks) {
+      if (ReactCurrentActQueue.current !== null) {
+        ReactCurrentActQueue.current.push(flushSyncCallbacks);
+      }
+      scheduleMicrotask(flushSyncCallbacks);
+    } else {
+      scheduleCallback(ImmediatePriority, flushSyncCallbacks);
+    }
+    newCallbackNode = null;
+  } else {
+    let schedulerPriorityLevel;
+    // TaskLanes => EventPriority => SchedulerPriority
+    switch (lanesToEventPriority(nextLanes)) {
+      case DiscreteEventPriority:
+        schedulerPriorityLevel = ImmediatePriority;
+        break;
+      case DefaultEventPriority:
+        schedulerPriorityLevel = NormalPriority;
+        break;
+      default:
+        schedulerPriorityLevel = NormalPriority;
+    }
+    newCallbackNode = scheduleCallback(
+      schedulerPriorityLevel
+      // performConcurrentWorkOnRoot.bind(null, root)
+    );
+  }
+  root.callbackNode = newCallbackNode;
+  root.callbackPriority = newCallbackPriority; // TaskLane
+}
+
+// This is the entry point for synchronous tasks that don't go through Scheduler
+function performSyncWorkOnRoot(root: FiberRoot): SchedulerCallback {
+  //
+  return null;
 }

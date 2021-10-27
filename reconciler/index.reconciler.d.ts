@@ -29,8 +29,13 @@ type FiberRoot = {
   pendingLanes: Lanes;
   suspendedLanes: Lanes;
   pingedLanes: Lanes;
+  expiredLanes: Lanes;
   eventTimes: Array<EventTime>;
   expirationTimes: Array<EventTime>;
+  callbackNode: any | null; // tmp
+  callbackPriority: Lane;
+  entangledLanes: Lanes;
+  entangledments: Array<Lane>; // tmp
 
   hydrationCallbacks?: any; // tmp
   pooledCache: Map<any, any>; // tmp
@@ -88,7 +93,7 @@ type UpdateQueue = {
   effects: Array<Update> | null;
 };
 
-//
+// 事件优先级
 type EventPriority = Lane;
 
 // RootTags
@@ -103,6 +108,9 @@ type SuspenseHydrationCallbacks = {
 //
 
 //
+
+// Scheduler
+type SchedulerCallback = ((isSync: boolean) => SchedulerCallback) | null;
 
 // Work Tags
 type WorkTag =
